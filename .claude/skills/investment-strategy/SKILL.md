@@ -41,8 +41,18 @@ AI or SpaceX exposure, entry timing, or monitoring a portfolio.
 # Full plan: allocation + DCA schedule + monitoring checklist
 python .claude/skills/investment-strategy/scripts/advisor.py plan 100000 --risk balanced
 
-# Just the dollar allocation
+# Live-price plan: same, but converts each dollar amount into whole shares at
+# the current quote and stamps every price with its source + capture time
+python .claude/skills/investment-strategy/scripts/advisor.py plan 100000 --live
+
+# Just the dollar allocation (add --live for shares)
 python .claude/skills/investment-strategy/scripts/advisor.py allocate 100000 --risk aggressive
+
+# Live quotes for any tickers
+python .claude/skills/investment-strategy/scripts/advisor.py quote NVDA GOOGL ARKVX
+
+# Cross-check a price across TWO independent feeds and flag any divergence
+python .claude/skills/investment-strategy/scripts/advisor.py crosscheck NVDA GOOGL
 
 # Curated watchlist with a thesis + what-to-watch per holding
 python .claude/skills/investment-strategy/scripts/advisor.py watchlist --theme ai
@@ -50,6 +60,25 @@ python .claude/skills/investment-strategy/scripts/advisor.py watchlist --theme a
 # Monitoring checklist
 python .claude/skills/investment-strategy/scripts/advisor.py monitor
 ```
+
+## Live data: accuracy, freshness, and honesty rules
+
+The `--live`, `quote`, and `crosscheck` commands hit public feeds (Yahoo
+Finance primary, Stooq fallback) using only the Python stdlib — no API key.
+
+- **Never fabricate a price.** If both feeds fail, the row prints `unavailable`
+  with the error; it does not guess.
+- **Always show freshness.** Every quote carries its source and UTC capture
+  time so the user can judge staleness themselves.
+- **Be honest about "real-time".** A free public feed is real-time for most
+  U.S. equities/ETFs *during market hours*, but can lag ~15 min on some venues
+  and outside hours; funds like `ARKVX` price once per day (NAV). A *guaranteed*
+  real-time, exchange-authoritative feed requires a **paid/broker subscription**
+  (e.g. a brokerage API, Polygon, or an exchange direct feed). Say this plainly;
+  do not claim a guarantee the free feed cannot provide.
+- **Cross-check before acting on a surprising number.** `crosscheck` pulls the
+  same ticker from two independent sources; agreement within ~1% is a sanity
+  check, a wide gap flags a stale/garbled feed to verify before trading.
 
 Risk profiles (fraction of lump sum): `core / ai / space / cash`
 - `conservative` — 50 / 20 / 5 / 25
