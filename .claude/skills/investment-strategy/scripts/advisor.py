@@ -627,8 +627,9 @@ def cmd_plan(budget: Decimal, risk: str, tranches: int, live: bool = False) -> N
     print()
     monitor_section()
     print()
-    print("  REMINDER: educational only — not financial advice. SpaceX is private;")
-    print("  exposure is via funds/proxies. Never invest money you may need soon.")
+    print("  REMINDER: educational only — not financial advice. Until its IPO lists,")
+    print("  SpaceX exposure is via funds/proxies; once public, treat a fresh mega-IPO")
+    print("  with the IPO discipline above. Never invest money you may need soon.")
 
 
 def monitor_section() -> None:
@@ -650,6 +651,35 @@ def monitor_section() -> None:
         "so you don't decide in a panic.",
     ]
     for c in checks:
+        print(f"    - {c}")
+
+    # Late-cycle / bubble-regime gauges. These are RISK THERMOMETERS, not timing
+    # triggers — no one reliably calls the exact top. Use them to decide how much
+    # dry powder to hold, not to pile in or fully bail.
+    print("\n  BUBBLE / REGIME WARNING GAUGES (thermometers, not timing signals):")
+    for c in [
+        "Market concentration: top-10 weight & tech share of the S&P 500 — the "
+        "higher it climbs, the more one wobble hurts the whole index.",
+        "Sentiment crowding: BofA Bull & Bear Indicator > 8 is a contrarian "
+        "'too-bullish' flag (cash low, managers all-in). A flag, not a sell button.",
+        "Rates: 30-yr Treasury yield > 5% and core CPI drifting toward 4-5% — rising "
+        "real rates compress high-growth/AI valuations the most.",
+        "Breadth: if new highs come from only a handful of AI names ('narrow' market), "
+        "the rally is fragile.",
+    ]:
+        print(f"    - {c}")
+
+    print("\n  IPO / HYPE DISCIPLINE (e.g. a SpaceX or OpenAI mega-IPO):")
+    for c in [
+        "A fresh mega-IPO is the most hyped, least-seasoned price you can pay. Don't "
+        "chase day one — let it trade a few quarters and report as a public company first.",
+        "Sanity-check valuation: price / sales and profitability vs. peers. A "
+        "trillion-dollar tag on a loss-making firm = priced for perfection.",
+        "If you must participate, cap it as a SMALL speculative position (well under "
+        "the 10% single-name limit) and average in — never reallocate the whole book into it.",
+        "History: giant IPOs often mark sentiment peaks. Index-inclusion buying can "
+        "spike a price short-term, then fade once the forced flows are done.",
+    ]:
         print(f"    - {c}")
 
 

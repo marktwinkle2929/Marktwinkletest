@@ -25,13 +25,19 @@ AI or SpaceX exposure, entry timing, or monitoring a portfolio.
 1. **Not advice.** Always state that output is educational, not financial/tax/
    investment advice, and that the user should do their own research or consult
    a licensed advisor.
-2. **SpaceX is private.** It cannot be bought directly on a public exchange.
-   Exposure comes only through regulated funds (e.g. ARK Venture `ARKVX`,
-   crossover ETF `XOVR`) or public proxies (e.g. Rocket Lab `RKLB`). Never imply
-   a user can buy SpaceX shares directly.
-3. **No price/return predictions.** Don't promise gains or call a market top/
-   bottom. Frame entries as dollar-cost averaging and emphasize diversification,
-   position limits, and pre-written sell rules.
+2. **SpaceX / mega-IPO discipline.** Until a mega-IPO actually lists, exposure is
+   only via regulated funds (`ARKVX`, `XOVR`) or proxies (`RKLB`) — never imply a
+   user can buy private shares directly. Once such a name is public, treat a fresh,
+   hyped mega-IPO with caution: don't chase day one, sanity-check valuation
+   (price/sales, profitability), and cap any participation as a SMALL speculative
+   position that averages in — never reallocate the whole book into it.
+3. **No price/return predictions; filter hype.** Don't promise gains or call a
+   market top/bottom. When a user brings influencer/news content, separate verified
+   facts from speculation, cross-check key numbers, and ignore engagement-bait
+   ("epic crash", "ultimate signal"). "Wait for the exact top signal" is market
+   timing — frame instead as DCA, diversification, position limits, dry powder, and
+   pre-written sell rules. Watch regime gauges (concentration, BofA Bull & Bear
+   > 8, 30-yr yield > 5%, core CPI) as thermometers, not buy/sell buttons.
 4. **Risk first.** Confirm the money is long-term (not an emergency fund or cash
    needed within ~3-5 years) before recommending risk-on sleeves.
 
