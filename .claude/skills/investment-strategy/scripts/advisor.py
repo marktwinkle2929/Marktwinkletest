@@ -139,6 +139,10 @@ PROFILES = {
     "conservative": {"core": "0.50", "ai": "0.20", "space": "0.05", "cash": "0.25"},
     "balanced":     {"core": "0.40", "ai": "0.30", "space": "0.10", "cash": "0.20"},
     "aggressive":   {"core": "0.25", "ai": "0.45", "space": "0.20", "cash": "0.10"},
+    # Same sleeve weights as 'balanced', but the space sleeve is restructured for
+    # a pending SpaceX IPO (see SLEEVE_OVERRIDES): trim the funds that already
+    # hold SpaceX and earmark a small reserve to average in AFTER it lists.
+    "balanced-ipo": {"core": "0.40", "ai": "0.30", "space": "0.10", "cash": "0.20"},
 }
 
 # --- Within-sleeve splits (fractions of the sleeve) ---------------------------
@@ -149,6 +153,19 @@ SLEEVES = {
     "space": [("ARKVX", "0.40"), ("XOVR", "0.30"), ("RKLB", "0.30")],
     "cash":  [("SGOV", "1.00")],
 }
+
+# Per-profile sleeve overrides. balanced-ipo trims ARKVX/XOVR (which already hold
+# SpaceX pre-IPO, to avoid tripling up) and reserves 30% of the space sleeve as a
+# capped SpaceX slice — parked in cash until the IPO lists, then averaged in.
+SLEEVE_OVERRIDES = {
+    "balanced-ipo": {
+        "space": [("ARKVX", "0.25"), ("XOVR", "0.15"), ("RKLB", "0.30"),
+                  ("SPACEX", "0.30")],
+    },
+}
+
+# Pseudo-tickers that are not yet tradeable — never fetch a quote for these.
+RESERVE_TICKERS = {"SPACEX"}
 
 # --- Holding catalog: name, kind, thesis, what to watch -----------------------
 HOLDINGS = {
@@ -195,6 +212,12 @@ HOLDINGS = {
     "SGOV":  ("iShares 0-3 Month Treasury ETF", "ETF",
               "Dry powder. Earns ~T-bill yield with almost no price risk while you wait to deploy.",
               "Short-term Treasury yield (the risk-free rate)."),
+    "SPACEX": ("SpaceX IPO reserve (hold in SGOV until it lists)", "Reserve",
+               "Capped speculative slice for the SpaceX IPO. Park it in SGOV now; "
+               "do NOT buy day one — after it lists, average in over ~3 tranches, "
+               "keeping total SpaceX exposure (this + ARKVX/XOVR) under ~5%.",
+               "IPO listing date/price, first public quarterly report, price vs. "
+               "the $135 IPO price, valuation (price/sales) vs. peers."),
 }
 
 SLEEVE_LABELS = {
@@ -229,7 +252,7 @@ def allocate(budget: Decimal, risk: str):
             sleeve_dollars = (budget * _d(w)).quantize(CENT, rounding=ROUND_HALF_UP)
         spent_total += sleeve_dollars
 
-        positions = SLEEVES[sleeve]
+        positions = SLEEVE_OVERRIDES.get(risk, {}).get(sleeve, SLEEVES[sleeve])
         rows = []
         spent_sleeve = Decimal(0)
         for p_idx, (ticker, pw) in enumerate(positions):
@@ -247,7 +270,8 @@ def cmd_allocate(budget: Decimal, risk: str, live: bool = False) -> None:
     plan = allocate(budget, risk)
     quotes = {}
     if live:
-        tickers = [t for _, _, rows in plan for t, _ in rows]
+        tickers = [t for _, _, rows in plan for t, _ in rows
+                   if t not in RESERVE_TICKERS]
         print("Fetching live quotes...", file=sys.stderr)
         quotes = fetch_quotes(tickers)
     print(f"Allocation for ${money(budget)}  ·  risk profile: {risk}"
@@ -258,6 +282,11 @@ def cmd_allocate(budget: Decimal, risk: str, live: bool = False) -> None:
         print(f"  {SLEEVE_LABELS[sleeve]}  —  ${money(sleeve_dollars)} ({pct(share)})")
         for ticker, dollars in rows:
             name = HOLDINGS[ticker][0]
+            if ticker in RESERVE_TICKERS:
+                print(f"      {ticker:<6} ${money(dollars):>12}   {name}")
+                if live:
+                    print(f"             not tradeable yet — hold in SGOV until IPO")
+                continue
             if not live:
                 print(f"      {ticker:<6} ${money(dollars):>12}   {name}")
                 continue
@@ -467,7 +496,8 @@ def build_dashboard(budget: Decimal, risk: str, live: bool) -> str:
     browser. With --live, prices/values are real and stamped with capture time.
     """
     plan = allocate(budget, risk)
-    quotes = fetch_quotes([t for _, _, rows in plan for t, _ in rows]) if live else {}
+    quotes = fetch_quotes([t for _, _, rows in plan for t, _ in rows
+                           if t not in RESERVE_TICKERS]) if live else {}
     gen = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
     # Sleeve bar chart (CSS widths — robust, no JS/SVG deps).
@@ -490,7 +520,10 @@ def build_dashboard(budget: Decimal, risk: str, live: bool) -> str:
             name = _esc(HOLDINGS[ticker][0])
             dot = (f'<span class="dot" style="background:{SLEEVE_COLORS[sleeve]}">'
                    f'</span>')
-            if live:
+            if ticker in RESERVE_TICKERS:
+                price_c, sh_c, val_c = "reserve", "—", "—"
+                asof_c = "hold in SGOV until IPO"
+            elif live:
                 q = quotes.get(ticker)
                 if q and q.price and not q.error:
                     shares = int(dollars / q.price)

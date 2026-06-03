@@ -99,6 +99,11 @@ Risk profiles (fraction of lump sum): `core / ai / space / cash`
 - `conservative` — 50 / 20 / 5 / 25
 - `balanced` — 40 / 30 / 10 / 20  (default)
 - `aggressive` — 25 / 45 / 20 / 10
+- `balanced-ipo` — same weights as `balanced`, but the space sleeve is restructured
+  for a pending SpaceX IPO: ARKVX/XOVR are trimmed (they already hold SpaceX
+  pre-IPO, so this avoids tripling up) and 30% of the sleeve becomes a capped
+  `SPACEX` reserve — a non-tradeable placeholder held in SGOV until the IPO lists,
+  then averaged in over ~3 tranches, keeping total SpaceX exposure under ~5%.
 
 The script reconciles every sleeve and the grand total exactly to the cent.
 
