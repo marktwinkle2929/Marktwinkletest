@@ -58,6 +58,11 @@ python .claude/skills/investment-strategy/scripts/advisor.py crosscheck NVDA GOO
 python .claude/skills/investment-strategy/scripts/advisor.py dashboard 100000 --live --out tracker.html
 # then open tracker.html in any browser (no server, no dependencies)
 
+# Screen a candidate the user read about: "should I add this?"
+# Cross-checks the price, flags overlap with held ETFs, sizes it, and lists the
+# judgment questions only the user's research can answer.
+python .claude/skills/investment-strategy/scripts/advisor.py evaluate ASTS --budget 100000
+
 # Curated watchlist with a thesis + what-to-watch per holding
 python .claude/skills/investment-strategy/scripts/advisor.py watchlist --theme ai
 

@@ -24,6 +24,7 @@ Usage:
     python advisor.py quote <ticker> [<ticker> ...]
     python advisor.py crosscheck <ticker> [<ticker> ...]   # agree across 2 feeds?
     python advisor.py dashboard <budget> [--risk balanced] [--live] [--out file.html]
+    python advisor.py evaluate <ticker> [--budget 100000]  # should I add this?
     python advisor.py monitor
 
 Risk profiles: conservative | balanced | aggressive   (default: balanced)
@@ -358,6 +359,102 @@ SLEEVE_COLORS = {
     "core": "#3b82f6", "ai": "#a855f7", "space": "#ef4444", "cash": "#10b981",
 }
 
+# --- Candidate screening knowledge --------------------------------------------
+# Partial, illustrative ETF constituents so the screener can flag when a new
+# name is ALREADY owned indirectly. Verify against the fund's official holdings
+# page — these lists are not exhaustive and change over time.
+CONSTITUENTS = {
+    "SMH": {"NVDA", "AVGO", "TSM", "AMD", "MU", "INTC", "QCOM", "TXN", "LRCX",
+            "AMAT", "ASML", "KLAC", "ADI", "MRVL", "MCHP", "NXPI", "ON", "TER"},
+    "QQQM": {"MSFT", "GOOGL", "GOOG", "NVDA", "AVGO", "META", "AMZN", "AAPL",
+             "TSLA", "AMD", "NFLX", "COST", "PLTR", "QCOM", "AMAT", "ADBE"},
+}
+# Funds in the default book that give broad/indirect exposure.
+HELD_ETFS = ["SMH", "QQQM"]
+# Rough theme tags for names a beginner is likely to read about.
+CANDIDATE_THEME = {
+    "AMD": "ai", "TSM": "ai", "PLTR": "ai", "MRVL": "ai", "MU": "ai",
+    "SMCI": "ai", "DELL": "ai", "ARM": "ai", "TSLA": "ai/space-adjacent",
+    "ASTS": "space", "LUNR": "space", "RDW": "space", "ASTR": "space",
+    "PL": "space", "BKSY": "space", "VSAT": "space", "RKLB": "space",
+}
+
+ALL_HELD = {t for positions in SLEEVES.values() for t, _ in positions}
+
+
+def _classify(ticker: str):
+    """Return (theme, direct_holding?, [ETFs that already cover it])."""
+    direct = ticker in ALL_HELD
+    covered = [etf for etf in HELD_ETFS if ticker in CONSTITUENTS.get(etf, set())]
+    theme = CANDIDATE_THEME.get(ticker) or ("known holding" if direct else "unknown")
+    return theme, direct, covered
+
+
+def cmd_evaluate(ticker: str, budget: Decimal, risk: str) -> None:
+    ticker = ticker.upper()
+    theme, direct, covered = _classify(ticker)
+    print("=" * 66)
+    print(f"  SCREEN: should {ticker} go into the strategy?")
+    print("=" * 66)
+
+    # 1) Data integrity — two independent feeds must agree.
+    print("\n  [1] DATA INTEGRITY (cross-checked across two feeds)")
+    try:
+        y = _from_yahoo(ticker).price
+    except Exception:
+        y = None
+    try:
+        s = _from_stooq(ticker).price
+    except Exception:
+        s = None
+    if y and s:
+        diff = abs(y - s) / ((y + s) / Decimal(2)) * Decimal(100)
+        flag = "agree" if diff <= Decimal("1.0") else "DISAGREE — verify"
+        print(f"      Yahoo ${money(y)} | Stooq ${money(s)} | "
+              f"diff {pct(diff/100)} -> {flag}")
+    elif y or s:
+        print(f"      Only one feed responded: ${money(y or s)} "
+              f"(can't cross-check — treat as unconfirmed)")
+    else:
+        print(f"      No price from either feed — bad/unknown ticker? Stop and verify.")
+
+    # 2) Fit & overlap with what you already own.
+    print("\n  [2] FIT & OVERLAP")
+    print(f"      Theme tag        : {theme}")
+    if direct:
+        print(f"      Already held     : YES — {ticker} is already a position. "
+              f"Adding = increasing its weight, not diversifying.")
+    elif covered:
+        print(f"      Indirect exposure: YES — already owned inside {', '.join(covered)}. "
+              f"Buying it directly is a CONCENTRATION bet on one name, not new exposure.")
+    else:
+        print(f"      Indirect exposure: not in the SMH/QQQM lists I track "
+              f"(still likely a tiny sliver via VTI if it's a U.S. stock).")
+
+    # 3) Position-sizing guardrail.
+    print("\n  [3] SIZING GUARDRAIL (single-stock cap ~10%)")
+    cap = (budget * Decimal("0.10")).quantize(CENT, rounding=ROUND_HALF_UP)
+    starter = (budget * Decimal("0.03")).quantize(CENT, rounding=ROUND_HALF_UP)
+    print(f"      On a ${money(budget)} book: hard cap ~${money(cap)}; "
+          f"a beginner starter is ~${money(starter)} (3%).")
+    print(f"      Fund it by trimming the matching sleeve (AI/space) or from cash —")
+    print(f"      don't let total single-stock names blow past the sleeve target.")
+
+    # 4) The judgment questions the data can't answer for you.
+    print("\n  [4] BEFORE YOU ADD — answer these (this is where YOUR reading matters)")
+    for q in [
+        "What is the ONE-SENTENCE thesis, and what would prove it WRONG?",
+        "Profitable / positive free cash flow, or a story stock? (speculative = smaller size)",
+        "Is the good news already priced in? (forward P/E vs. its own history & peers)",
+        "Does it add a NEW driver, or just double-down on AI/space you already own?",
+        "Liquidity: can you exit easily? (avoid thin micro-caps and lock-up funds for big size)",
+        "Source quality: primary source, or someone talking their own book?",
+    ]:
+        print(f"        - {q}")
+    print("\n  Verdict is yours. Rule of thumb: if it only deepens existing AI/space")
+    print("  exposure, prefer adding to your ETF (SMH/QQQM) over a single stock.")
+    print("  Educational only — not financial advice; verify all figures yourself.")
+
 
 def _esc(text: str) -> str:
     return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
@@ -598,6 +695,8 @@ def main(argv: list[str]) -> int:
     elif cmd == "dashboard":
         cmd_dashboard(_d(positional[0]), risk, live,
                       opts.get("out", "portfolio_tracker.html"))
+    elif cmd == "evaluate":
+        cmd_evaluate(positional[0], _d(opts.get("budget", "100000")), risk)
     elif cmd == "monitor":
         monitor_section()
     else:
