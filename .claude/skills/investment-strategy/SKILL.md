@@ -54,6 +54,10 @@ python .claude/skills/investment-strategy/scripts/advisor.py quote NVDA GOOGL AR
 # Cross-check a price across TWO independent feeds and flag any divergence
 python .claude/skills/investment-strategy/scripts/advisor.py crosscheck NVDA GOOGL
 
+# Visual tracker: self-contained HTML dashboard (allocation bar + live table)
+python .claude/skills/investment-strategy/scripts/advisor.py dashboard 100000 --live --out tracker.html
+# then open tracker.html in any browser (no server, no dependencies)
+
 # Curated watchlist with a thesis + what-to-watch per holding
 python .claude/skills/investment-strategy/scripts/advisor.py watchlist --theme ai
 

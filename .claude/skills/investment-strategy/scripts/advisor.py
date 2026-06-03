@@ -23,6 +23,7 @@ Usage:
     python advisor.py plan <budget> [--risk balanced] [--tranches 4] [--live]
     python advisor.py quote <ticker> [<ticker> ...]
     python advisor.py crosscheck <ticker> [<ticker> ...]   # agree across 2 feeds?
+    python advisor.py dashboard <budget> [--risk balanced] [--live] [--out file.html]
     python advisor.py monitor
 
 Risk profiles: conservative | balanced | aggressive   (default: balanced)
@@ -353,6 +354,156 @@ def cmd_crosscheck(tickers, tol_pct: Decimal = Decimal("1.0")) -> None:
           f"means one\nfeed is stale (after-hours/NAV timing) — verify before acting.")
 
 
+SLEEVE_COLORS = {
+    "core": "#3b82f6", "ai": "#a855f7", "space": "#ef4444", "cash": "#10b981",
+}
+
+
+def _esc(text: str) -> str:
+    return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def build_dashboard(budget: Decimal, risk: str, live: bool) -> str:
+    """Return a self-contained HTML string: a visual portfolio tracker.
+
+    No external libraries or fonts — pure HTML/CSS so it opens offline in any
+    browser. With --live, prices/values are real and stamped with capture time.
+    """
+    plan = allocate(budget, risk)
+    quotes = fetch_quotes([t for _, _, rows in plan for t, _ in rows]) if live else {}
+    gen = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+    # Sleeve bar chart (CSS widths — robust, no JS/SVG deps).
+    bars = []
+    for sleeve, dollars, _ in plan:
+        w = (dollars / budget * Decimal(100)) if budget else Decimal(0)
+        bars.append(
+            f'<div class="seg" style="width:{w.quantize(Decimal("0.01"))}%;'
+            f'background:{SLEEVE_COLORS[sleeve]}" '
+            f'title="{SLEEVE_LABELS[sleeve]}: {pct(dollars/budget)}"></div>')
+    legend = "".join(
+        f'<span class="lg"><i style="background:{SLEEVE_COLORS[s]}"></i>'
+        f'{_esc(SLEEVE_LABELS[s])} — ${money(d)} ({pct(d/budget)})</span>'
+        for s, d, _ in plan)
+
+    # Holdings table.
+    rows_html, total_value, leftover = [], Decimal(0), Decimal(0)
+    for sleeve, _, rows in plan:
+        for ticker, dollars in rows:
+            name = _esc(HOLDINGS[ticker][0])
+            dot = (f'<span class="dot" style="background:{SLEEVE_COLORS[sleeve]}">'
+                   f'</span>')
+            if live:
+                q = quotes.get(ticker)
+                if q and q.price and not q.error:
+                    shares = int(dollars / q.price)
+                    value = (q.price * shares).quantize(CENT, rounding=ROUND_HALF_UP)
+                    leftover += dollars - value
+                    total_value += value
+                    price_c = f"${money(q.price)}"
+                    asof_c = _esc(fmt_asof(q))
+                    sh_c, val_c = str(shares), f"${money(value)}"
+                else:
+                    err = _esc(q.error if q and q.error else "unavailable")
+                    price_c, asof_c, sh_c, val_c = "—", err, "—", "—"
+            else:
+                price_c = asof_c = sh_c = val_c = "—"
+            rows_html.append(
+                f"<tr><td>{dot}<b>{ticker}</b></td><td>{name}</td>"
+                f"<td class=num>${money(dollars)}</td><td class=num>{price_c}</td>"
+                f"<td class=num>{sh_c}</td><td class=num>{val_c}</td>"
+                f"<td class=asof>{asof_c}</td></tr>")
+
+    live_banner = (
+        f'<div class="note">Live prices baked in at generation time. '
+        f'Regenerate to refresh. Uninvested whole-share remainder: '
+        f'<b>${money(leftover)}</b>.</div>'
+        if live else
+        f'<div class="note">Static plan (no live prices). Re-run with '
+        f'<code>--live</code> for real quotes, share counts, and market values.</div>')
+
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portfolio Tracker — {risk}</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0;
+    background: #0b1020; color: #e6e9f0; }}
+  .wrap {{ max-width: 920px; margin: 0 auto; padding: 28px 20px 60px; }}
+  h1 {{ font-size: 22px; margin: 0 0 4px; }}
+  .sub {{ color: #9aa3b8; font-size: 13px; margin-bottom: 22px; }}
+  .bar {{ display: flex; height: 26px; border-radius: 7px; overflow: hidden;
+    box-shadow: 0 1px 0 #ffffff14 inset; }}
+  .seg {{ height: 100%; }}
+  .legend {{ display: flex; flex-wrap: wrap; gap: 14px; margin: 14px 0 6px;
+    font-size: 12.5px; color: #c7cde0; }}
+  .lg i {{ display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+    margin-right: 6px; vertical-align: middle; }}
+  table {{ width: 100%; border-collapse: collapse; margin-top: 22px;
+    font-size: 13.5px; }}
+  th, td {{ text-align: left; padding: 9px 10px; border-bottom: 1px solid #1d2540; }}
+  th {{ color: #9aa3b8; font-weight: 600; font-size: 11.5px;
+    text-transform: uppercase; letter-spacing: .04em; }}
+  td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  th.num {{ text-align: right; }}
+  td.asof {{ color: #7e879e; font-size: 11px; }}
+  .dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 8px; }}
+  .cards {{ display: flex; gap: 14px; flex-wrap: wrap; margin: 22px 0 6px; }}
+  .card {{ flex: 1; min-width: 150px; background: #121a33; border: 1px solid #1d2540;
+    border-radius: 11px; padding: 14px 16px; }}
+  .card .k {{ color: #9aa3b8; font-size: 11.5px; text-transform: uppercase; }}
+  .card .v {{ font-size: 21px; font-weight: 700; margin-top: 4px; }}
+  .note {{ background: #121a33; border: 1px solid #1d2540; border-left: 3px solid #f59e0b;
+    padding: 10px 14px; border-radius: 8px; font-size: 12.5px; color: #cdd3e6;
+    margin-top: 22px; }}
+  .disc {{ color: #6b7390; font-size: 11px; margin-top: 26px; line-height: 1.5; }}
+  code {{ background: #1d2540; padding: 1px 5px; border-radius: 4px; }}
+</style></head>
+<body><div class="wrap">
+  <h1>📈 Portfolio Tracker</h1>
+  <div class="sub">Budget <b>${money(budget)}</b> · risk profile <b>{risk}</b>
+    · generated {gen}</div>
+
+  <div class="cards">
+    <div class="card"><div class="k">Target budget</div>
+      <div class="v">${money(budget)}</div></div>
+    <div class="card"><div class="k">Invested value</div>
+      <div class="v">{'$'+money(total_value) if live else '—'}</div></div>
+    <div class="card"><div class="k">Holdings</div>
+      <div class="v">{sum(len(r) for _,_,r in plan)}</div></div>
+  </div>
+
+  <div class="bar">{''.join(bars)}</div>
+  <div class="legend">{legend}</div>
+
+  <table>
+    <thead><tr><th>Ticker</th><th>Name</th><th class=num>Target $</th>
+      <th class=num>Price</th><th class=num>Shares</th><th class=num>Value</th>
+      <th>As of</th></tr></thead>
+    <tbody>{''.join(rows_html)}</tbody>
+  </table>
+
+  {live_banner}
+  <div class="disc">Educational only — not financial, tax, or investment advice.
+    SpaceX is a private company; exposure here is via regulated funds/proxies,
+    never direct shares. Free price feeds may lag ~15 min and funds price once
+    daily (NAV); a guaranteed real-time feed needs a paid/broker subscription.
+  </div>
+</div></body></html>"""
+
+
+def cmd_dashboard(budget: Decimal, risk: str, live: bool, out: str) -> None:
+    if live:
+        print("Fetching live quotes for dashboard...", file=sys.stderr)
+    html = build_dashboard(budget, risk, live)
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write(html)
+    print(f"Wrote visual tracker -> {out}")
+    print(f"Open it in a browser:  file://{out}")
+
+
 def cmd_plan(budget: Decimal, risk: str, tranches: int, live: bool = False) -> None:
     print("=" * 70)
     print(f"  INVESTMENT PLAN  ·  ${money(budget)}  ·  {risk} profile")
@@ -444,6 +595,9 @@ def main(argv: list[str]) -> int:
         cmd_quote(positional)
     elif cmd == "crosscheck":
         cmd_crosscheck(positional)
+    elif cmd == "dashboard":
+        cmd_dashboard(_d(positional[0]), risk, live,
+                      opts.get("out", "portfolio_tracker.html"))
     elif cmd == "monitor":
         monitor_section()
     else:
