@@ -23,7 +23,7 @@ Usage:
     python advisor.py plan <budget> [--risk balanced] [--tranches 4] [--live]
     python advisor.py quote <ticker> [<ticker> ...]
     python advisor.py crosscheck <ticker> [<ticker> ...]   # agree across 2 feeds?
-    python advisor.py dashboard <budget> [--risk balanced] [--live] [--out file.html]
+    python advisor.py dashboard <budget> [--risk balanced] [--live] [--out file.html] [--range 1y]
     python advisor.py evaluate <ticker> [--budget 100000]  # should I add this?
     python advisor.py monitor
 
@@ -125,6 +125,32 @@ def fetch_quote(ticker: str) -> Quote:
 
 def fetch_quotes(tickers) -> dict:
     return {t: fetch_quote(t) for t in tickers}
+
+
+def fetch_history(ticker: str, rng: str = "1y", interval: str = "1wk"):
+    """Return [(date, close_float), ...] of historical closes, or [] on failure.
+
+    Uses the same Yahoo chart endpoint as the live quote (no extra deps). Closes
+    are plain floats — these drive chart PIXEL geometry only, never money math.
+    """
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+           f"?interval={interval}&range={rng}")
+    try:
+        result = json.loads(_http_get(url))["chart"]["result"][0]
+        stamps = result.get("timestamp") or []
+        closes = result["indicators"]["quote"][0].get("close") or []
+    except Exception:
+        return []
+    series = []
+    for ts, c in zip(stamps, closes):
+        if c is None:
+            continue
+        series.append((datetime.datetime.utcfromtimestamp(ts).date(), float(c)))
+    return series
+
+
+def fetch_histories(tickers, rng: str = "1y", interval: str = "1wk") -> dict:
+    return {t: fetch_history(t, rng, interval) for t in tickers}
 
 
 def fmt_asof(q: Quote) -> str:
@@ -388,6 +414,52 @@ SLEEVE_COLORS = {
     "core": "#3b82f6", "ai": "#a855f7", "space": "#ef4444", "cash": "#10b981",
 }
 
+UP_COLOR, DOWN_COLOR = "#22c55e", "#ef4444"
+
+
+def sparkline_svg(series, width: int = 240, height: int = 56) -> str:
+    """Inline SVG line chart of a price history. Pure SVG — no JS/lib.
+
+    Green if the period ended higher than it started, red otherwise. Returns an
+    empty string when there is too little data to draw a meaningful line.
+    """
+    pts = [c for _, c in series]
+    if len(pts) < 2:
+        return ""
+    lo, hi = min(pts), max(pts)
+    span = (hi - lo) or 1.0
+    pad = 4.0
+    n = len(pts) - 1
+    coords = []
+    for i, c in enumerate(pts):
+        x = pad + (width - 2 * pad) * (i / n)
+        y = pad + (height - 2 * pad) * (1 - (c - lo) / span)
+        coords.append(f"{x:.1f},{y:.1f}")
+    color = UP_COLOR if pts[-1] >= pts[0] else DOWN_COLOR
+    line = " ".join(coords)
+    # Fill area under the line for a sparkline feel.
+    area = f"{pad:.1f},{height - pad:.1f} {line} {width - pad:.1f},{height - pad:.1f}"
+    fill_id = f"g{abs(hash(line)) % 100000}"
+    return (
+        f'<svg class="spark" viewBox="0 0 {width} {height}" '
+        f'preserveAspectRatio="none" width="100%" height="{height}">'
+        f'<defs><linearGradient id="{fill_id}" x1="0" y1="0" x2="0" y2="1">'
+        f'<stop offset="0%" stop-color="{color}" stop-opacity="0.28"/>'
+        f'<stop offset="100%" stop-color="{color}" stop-opacity="0"/>'
+        f'</linearGradient></defs>'
+        f'<polygon points="{area}" fill="url(#{fill_id})" stroke="none"/>'
+        f'<polyline points="{line}" fill="none" stroke="{color}" '
+        f'stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>'
+        f'</svg>')
+
+
+def period_change(series):
+    """Return (pct_change_float, first_close, last_close) or (None, None, None)."""
+    pts = [c for _, c in series]
+    if len(pts) < 2 or pts[0] == 0:
+        return None, None, None
+    return (pts[-1] - pts[0]) / pts[0] * 100.0, pts[0], pts[-1]
+
 # --- Candidate screening knowledge --------------------------------------------
 # Partial, illustrative ETF constituents so the screener can flag when a new
 # name is ALREADY owned indirectly. Verify against the fund's official holdings
@@ -489,40 +561,50 @@ def _esc(text: str) -> str:
     return (text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
 
-def build_dashboard(budget: Decimal, risk: str, live: bool) -> str:
+def build_dashboard(budget: Decimal, risk: str, live: bool,
+                    history_range: str = "1y") -> str:
     """Return a self-contained HTML string: a visual portfolio tracker.
 
-    No external libraries or fonts — pure HTML/CSS so it opens offline in any
-    browser. With --live, prices/values are real and stamped with capture time.
+    No external libraries or fonts — pure HTML/CSS/SVG so it opens offline in
+    any browser. With --live, prices/values are real and stamped with capture
+    time. Each tradeable holding also gets an inline SVG price-history chart and
+    its period return, plus the "why buy" thesis and "what to watch".
     """
     plan = allocate(budget, risk)
-    quotes = fetch_quotes([t for _, _, rows in plan for t, _ in rows
-                           if t not in RESERVE_TICKERS]) if live else {}
+    tradeable = [t for _, _, rows in plan for t, _ in rows
+                 if t not in RESERVE_TICKERS]
+    quotes = fetch_quotes(tradeable) if live else {}
+    histories = fetch_histories(tradeable, rng=history_range, interval="1wk")
     gen = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    rng_label = {"6mo": "6-month", "1y": "1-year", "2y": "2-year",
+                 "5y": "5-year"}.get(history_range, history_range)
 
-    # Sleeve bar chart (CSS widths — robust, no JS/SVG deps).
-    bars = []
+    # Sleeve allocation bar (CSS widths — robust, no JS/SVG deps).
+    bars, legend_parts = [], []
     for sleeve, dollars, _ in plan:
         w = (dollars / budget * Decimal(100)) if budget else Decimal(0)
         bars.append(
             f'<div class="seg" style="width:{w.quantize(Decimal("0.01"))}%;'
             f'background:{SLEEVE_COLORS[sleeve]}" '
             f'title="{SLEEVE_LABELS[sleeve]}: {pct(dollars/budget)}"></div>')
-    legend = "".join(
-        f'<span class="lg"><i style="background:{SLEEVE_COLORS[s]}"></i>'
-        f'{_esc(SLEEVE_LABELS[s])} — ${money(d)} ({pct(d/budget)})</span>'
-        for s, d, _ in plan)
+        legend_parts.append(
+            f'<span class="lg"><i style="background:{SLEEVE_COLORS[sleeve]}"></i>'
+            f'{_esc(SLEEVE_LABELS[sleeve])} — ${money(dollars)} '
+            f'({pct(dollars/budget)})</span>')
+    legend = "".join(legend_parts)
 
-    # Holdings table.
-    rows_html, total_value, leftover = [], Decimal(0), Decimal(0)
-    for sleeve, _, rows in plan:
+    # Per-sleeve sections of holding cards (chart + why + how-much).
+    sections, total_value, leftover = [], Decimal(0), Decimal(0)
+    for sleeve, sleeve_dollars, rows in plan:
+        cards = []
         for ticker, dollars in rows:
-            name = _esc(HOLDINGS[ticker][0])
-            dot = (f'<span class="dot" style="background:{SLEEVE_COLORS[sleeve]}">'
-                   f'</span>')
+            name, kind, thesis, watch = HOLDINGS[ticker]
+            color = SLEEVE_COLORS[sleeve]
+
+            # "How much" — price / shares / value.
             if ticker in RESERVE_TICKERS:
-                price_c, sh_c, val_c = "reserve", "—", "—"
-                asof_c = "hold in SGOV until IPO"
+                price_c, sh_c, val_c, asof_c = "reserve", "—", "—", \
+                    "not tradeable — hold in SGOV until IPO"
             elif live:
                 q = quotes.get(ticker)
                 if q and q.price and not q.error:
@@ -530,27 +612,70 @@ def build_dashboard(budget: Decimal, risk: str, live: bool) -> str:
                     value = (q.price * shares).quantize(CENT, rounding=ROUND_HALF_UP)
                     leftover += dollars - value
                     total_value += value
-                    price_c = f"${money(q.price)}"
+                    price_c, sh_c, val_c = f"${money(q.price)}", str(shares), \
+                        f"${money(value)}"
                     asof_c = _esc(fmt_asof(q))
-                    sh_c, val_c = str(shares), f"${money(value)}"
                 else:
                     err = _esc(q.error if q and q.error else "unavailable")
-                    price_c, asof_c, sh_c, val_c = "—", err, "—", "—"
+                    price_c, sh_c, val_c, asof_c = "—", "—", "—", err
             else:
-                price_c = asof_c = sh_c = val_c = "—"
-            rows_html.append(
-                f"<tr><td>{dot}<b>{ticker}</b></td><td>{name}</td>"
-                f"<td class=num>${money(dollars)}</td><td class=num>{price_c}</td>"
-                f"<td class=num>{sh_c}</td><td class=num>{val_c}</td>"
-                f"<td class=asof>{asof_c}</td></tr>")
+                price_c = sh_c = val_c = "—"
+                asof_c = "static plan (no --live)"
+
+            # Chart + period return.
+            series = histories.get(ticker, [])
+            chart = sparkline_svg(series)
+            chg, first_c, last_c = period_change(series)
+            if chart:
+                cls = "up" if chg is not None and chg >= 0 else "down"
+                sign = "+" if chg is not None and chg >= 0 else ""
+                chg_html = (f'<span class="chg {cls}">{sign}{chg:.1f}% '
+                            f'· {rng_label}</span>') if chg is not None else ""
+                chart_html = (f'<div class="chartwrap">{chart}'
+                              f'<div class="chgline">{chg_html}</div></div>')
+            elif ticker in RESERVE_TICKERS:
+                chart_html = ('<div class="chartwrap nochart">No market history — '
+                              'pre-IPO reserve</div>')
+            else:
+                chart_html = ('<div class="chartwrap nochart">Price history '
+                              'unavailable</div>')
+
+            cards.append(f"""
+        <div class="hcard" style="border-left:3px solid {color}">
+          <div class="hhead">
+            <span class="tk">{ticker}</span>
+            <span class="kind">{_esc(kind)}</span>
+            <span class="nm">{_esc(name)}</span>
+          </div>
+          {chart_html}
+          <div class="metrics">
+            <div><span class="mk">Buy (target)</span><span class="mv">${money(dollars)}</span></div>
+            <div><span class="mk">Latest price</span><span class="mv">{price_c}</span></div>
+            <div><span class="mk">Shares</span><span class="mv">{sh_c}</span></div>
+            <div><span class="mk">Value</span><span class="mv">{val_c}</span></div>
+          </div>
+          <div class="asof">{asof_c}</div>
+          <div class="why"><b>Why:</b> {_esc(thesis)}</div>
+          <div class="watch"><b>Watch:</b> {_esc(watch)}</div>
+        </div>""")
+
+        sections.append(f"""
+      <div class="sleeve">
+        <div class="sleeve-h"><span class="sdot" style="background:{SLEEVE_COLORS[sleeve]}"></span>
+          {_esc(SLEEVE_LABELS[sleeve])} — <b>${money(sleeve_dollars)}</b>
+          ({pct(sleeve_dollars/budget) if budget else '—'})</div>
+        <div class="hgrid">{''.join(cards)}</div>
+      </div>""")
 
     live_banner = (
-        f'<div class="note">Live prices baked in at generation time. '
-        f'Regenerate to refresh. Uninvested whole-share remainder: '
-        f'<b>${money(leftover)}</b>.</div>'
+        f'<div class="note">Live prices &amp; {rng_label} charts baked in at '
+        f'generation time — regenerate to refresh. Uninvested whole-share '
+        f'remainder: <b>${money(leftover)}</b> (brokers with fractional shares '
+        f'remove this).</div>'
         if live else
-        f'<div class="note">Static plan (no live prices). Re-run with '
-        f'<code>--live</code> for real quotes, share counts, and market values.</div>')
+        f'<div class="note">Charts show {rng_label} history, but this is a static '
+        f'plan (no live prices). Re-run with <code>--live</code> for real quotes, '
+        f'share counts, and market values.</div>')
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -560,7 +685,7 @@ def build_dashboard(budget: Decimal, risk: str, live: bool) -> str:
   :root {{ color-scheme: dark; }}
   body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0;
     background: #0b1020; color: #e6e9f0; }}
-  .wrap {{ max-width: 920px; margin: 0 auto; padding: 28px 20px 60px; }}
+  .wrap {{ max-width: 980px; margin: 0 auto; padding: 28px 20px 60px; }}
   h1 {{ font-size: 22px; margin: 0 0 4px; }}
   .sub {{ color: #9aa3b8; font-size: 13px; margin-bottom: 22px; }}
   .bar {{ display: flex; height: 26px; border-radius: 7px; overflow: hidden;
@@ -570,21 +695,39 @@ def build_dashboard(budget: Decimal, risk: str, live: bool) -> str:
     font-size: 12.5px; color: #c7cde0; }}
   .lg i {{ display: inline-block; width: 10px; height: 10px; border-radius: 3px;
     margin-right: 6px; vertical-align: middle; }}
-  table {{ width: 100%; border-collapse: collapse; margin-top: 22px;
-    font-size: 13.5px; }}
-  th, td {{ text-align: left; padding: 9px 10px; border-bottom: 1px solid #1d2540; }}
-  th {{ color: #9aa3b8; font-weight: 600; font-size: 11.5px;
-    text-transform: uppercase; letter-spacing: .04em; }}
-  td.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
-  th.num {{ text-align: right; }}
-  td.asof {{ color: #7e879e; font-size: 11px; }}
-  .dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-    margin-right: 8px; }}
   .cards {{ display: flex; gap: 14px; flex-wrap: wrap; margin: 22px 0 6px; }}
   .card {{ flex: 1; min-width: 150px; background: #121a33; border: 1px solid #1d2540;
     border-radius: 11px; padding: 14px 16px; }}
   .card .k {{ color: #9aa3b8; font-size: 11.5px; text-transform: uppercase; }}
   .card .v {{ font-size: 21px; font-weight: 700; margin-top: 4px; }}
+  .sleeve {{ margin-top: 30px; }}
+  .sleeve-h {{ font-size: 14px; color: #d7dcec; margin-bottom: 12px; }}
+  .sdot {{ display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    margin-right: 8px; vertical-align: middle; }}
+  .hgrid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+    gap: 14px; }}
+  .hcard {{ background: #121a33; border: 1px solid #1d2540; border-radius: 11px;
+    padding: 13px 15px; }}
+  .hhead {{ display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }}
+  .tk {{ font-size: 16px; font-weight: 700; }}
+  .kind {{ font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+    color: #9aa3b8; background: #1d2540; padding: 2px 6px; border-radius: 5px; }}
+  .nm {{ font-size: 12px; color: #9aa3b8; }}
+  .chartwrap {{ margin: 10px 0 4px; }}
+  .nochart {{ color: #6b7390; font-size: 11.5px; padding: 16px 0; text-align: center; }}
+  .spark {{ display: block; }}
+  .chgline {{ text-align: right; margin-top: 2px; }}
+  .chg {{ font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }}
+  .chg.up {{ color: {UP_COLOR}; }}
+  .chg.down {{ color: {DOWN_COLOR}; }}
+  .metrics {{ display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px;
+    margin: 8px 0 6px; }}
+  .metrics .mk {{ color: #9aa3b8; font-size: 11px; display: block; }}
+  .metrics .mv {{ font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }}
+  .asof {{ color: #7e879e; font-size: 10.5px; margin-bottom: 8px; }}
+  .why {{ font-size: 12px; color: #cdd3e6; line-height: 1.45; margin-bottom: 5px; }}
+  .watch {{ font-size: 11.5px; color: #9aa3b8; line-height: 1.4; }}
+  .why b, .watch b {{ color: #e6e9f0; }}
   .note {{ background: #121a33; border: 1px solid #1d2540; border-left: 3px solid #f59e0b;
     padding: 10px 14px; border-radius: 8px; font-size: 12.5px; color: #cdd3e6;
     margin-top: 22px; }}
@@ -594,7 +737,7 @@ def build_dashboard(budget: Decimal, risk: str, live: bool) -> str:
 <body><div class="wrap">
   <h1>📈 Portfolio Tracker</h1>
   <div class="sub">Budget <b>${money(budget)}</b> · risk profile <b>{risk}</b>
-    · generated {gen}</div>
+    · {rng_label} charts · generated {gen}</div>
 
   <div class="cards">
     <div class="card"><div class="k">Target budget</div>
@@ -608,15 +751,11 @@ def build_dashboard(budget: Decimal, risk: str, live: bool) -> str:
   <div class="bar">{''.join(bars)}</div>
   <div class="legend">{legend}</div>
 
-  <table>
-    <thead><tr><th>Ticker</th><th>Name</th><th class=num>Target $</th>
-      <th class=num>Price</th><th class=num>Shares</th><th class=num>Value</th>
-      <th>As of</th></tr></thead>
-    <tbody>{''.join(rows_html)}</tbody>
-  </table>
+  {''.join(sections)}
 
   {live_banner}
   <div class="disc">Educational only — not financial, tax, or investment advice.
+    Past performance (the charts above) does not predict future returns.
     SpaceX is a private company; exposure here is via regulated funds/proxies,
     never direct shares. Free price feeds may lag ~15 min and funds price once
     daily (NAV); a guaranteed real-time feed needs a paid/broker subscription.
@@ -624,10 +763,12 @@ def build_dashboard(budget: Decimal, risk: str, live: bool) -> str:
 </div></body></html>"""
 
 
-def cmd_dashboard(budget: Decimal, risk: str, live: bool, out: str) -> None:
+def cmd_dashboard(budget: Decimal, risk: str, live: bool, out: str,
+                  history_range: str = "1y") -> None:
     if live:
         print("Fetching live quotes for dashboard...", file=sys.stderr)
-    html = build_dashboard(budget, risk, live)
+    print("Fetching price history for charts...", file=sys.stderr)
+    html = build_dashboard(budget, risk, live, history_range)
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(html)
     print(f"Wrote visual tracker -> {out}")
@@ -757,7 +898,8 @@ def main(argv: list[str]) -> int:
         cmd_crosscheck(positional)
     elif cmd == "dashboard":
         cmd_dashboard(_d(positional[0]), risk, live,
-                      opts.get("out", "portfolio_tracker.html"))
+                      opts.get("out", "portfolio_tracker.html"),
+                      opts.get("range", "1y"))
     elif cmd == "evaluate":
         cmd_evaluate(positional[0], _d(opts.get("budget", "100000")), risk)
     elif cmd == "monitor":
